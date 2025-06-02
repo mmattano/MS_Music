@@ -1,0 +1,36 @@
+from setuptools import setup, find_packages
+
+setup(
+    name='ms_music',
+    version='0.1.0',
+    author='Matthias Anagho-Mattanovich',
+    description='A Python package to generate audio from mass spectrometry data (.mzML files).',
+    long_description=open('README.md').read(),
+    long_description_content_type='',
+    url='', 
+    packages=find_packages(),
+    install_requires=[
+        'numpy',
+        'pandas',
+        'matchms>=0.25.0',
+        'wavio',
+        'librosa>=0.9.0',
+        'scipy',
+        'tqdm',
+    ],
+    classifiers=[
+        'Development Status :: 3 - Alpha',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: MIT License',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Operating System :: OS Independent',
+        'Topic :: Multimedia :: Sound/Audio :: Sound Synthesis',
+        'Topic :: Scientific/Engineering :: Bio-Informatics',
+        'Topic :: Scientific/Engineering :: Chemistry',
+    ],
+    python_requires='>=3.8',
+)
