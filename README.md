@@ -236,4 +236,3 @@ We'll figure details out later, for now, just have fun with the code! If you hav
 
 ## License
 This project is licensed under the MIT License - see the `LICENSE` file for details.
-```
