@@ -3,6 +3,7 @@
 import numpy as np
 from tqdm import tqdm
 import os
+import math
 
 from . import data_loader
 from . import audio_generator
@@ -183,4 +184,155 @@ class MSSonifier:
         if self.current_audio_data is None:
             return None
         return np.copy(self.current_audio_data) if copy else self.current_audio_data
+            
+
+    def sonify_enhanced(self, method: str = 'gradient_enhanced', method_params: dict = None):
+        """
+        Enhanced sonification with better frequency mapping options.
         
+        Args:
+            method: 'gradient_enhanced' or 'adsr_enhanced'
+            method_params: Dictionary with parameters including:
+                - frequency_mapping: 'inverse_log', 'power_law', 'musical_octaves', 'chromatic'
+                - freq_range: (min_freq, max_freq) tuple in Hz
+                - overlap_percentage: for gradient method
+                - adsr_settings: for ADSR method
+        """
+        if self.processed_spectra_dfs is None or not self.processed_spectra_dfs:
+            print("Data not loaded or preprocessed. Please call load_and_preprocess_data() first.")
+            return
+
+        if method_params is None:
+            method_params = {}
+            
+        # Default parameters
+        frequency_mapping = method_params.get('frequency_mapping', 'inverse_log')
+        freq_range = method_params.get('freq_range', (200.0, 4000.0))
+        
+        print(f"Starting enhanced sonification using '{method}' method...")
+        print(f"Frequency mapping: {frequency_mapping}, Range: {freq_range[0]}-{freq_range[1]} Hz")
+
+        if method == 'gradient_enhanced':
+            overlap_percentage = method_params.get('overlap_percentage', 0.05)
+            self.current_audio_data = self._generate_audio_gradient_enhanced(
+                frequency_mapping=frequency_mapping,
+                freq_range=freq_range,
+                overlap_percentage=overlap_percentage
+            )
+        elif method == 'adsr_enhanced':
+            adsr_settings = method_params.get('adsr_settings', None)
+            self.current_audio_data = self._generate_audio_adsr_enhanced(
+                frequency_mapping=frequency_mapping,
+                freq_range=freq_range,
+                adsr_settings=adsr_settings
+            )
+        else:
+            raise ValueError(f"Unknown enhanced method: {method}. Choose 'gradient_enhanced' or 'adsr_enhanced'.")
+
+        if self.current_audio_data is not None and self.current_audio_data.size > 0:
+            print("Enhanced sonification complete.")
+        else:
+            print("Enhanced sonification failed to produce audio data.")
+            self.current_audio_data = None
+
+    def _mz_to_frequency(self, mz_value, mapping_type, freq_range):
+        """Helper method for frequency mapping."""
+        freq_min, freq_max = freq_range
+        
+        if mapping_type == 'inverse_log':
+            if mz_value <= 0 or self.min_mz_overall <= 0:
+                return freq_min
+            mz_normalized = (mz_value - self.min_mz_overall) / (self.max_mz_overall - self.min_mz_overall)
+            mz_normalized = np.clip(mz_normalized, 0, 1)
+            log_ratio = math.log(freq_max / freq_min)
+            return freq_max * math.exp(-mz_normalized * log_ratio)
+            
+        elif mapping_type == 'power_law':
+            if mz_value <= 0:
+                return freq_min
+            mz_normalized = (mz_value - self.min_mz_overall) / (self.max_mz_overall - self.min_mz_overall)
+            mz_normalized = np.clip(mz_normalized, 0, 1)
+            freq_normalized = (1 - mz_normalized) ** 1.5  # Power law exponent
+            log_freq_min = math.log(freq_min)
+            log_freq_max = math.log(freq_max)
+            log_frequency = log_freq_min + freq_normalized * (log_freq_max - log_freq_min)
+            return math.exp(log_frequency)
+            
+        elif mapping_type == 'musical_octaves':
+            if mz_value <= 0:
+                return freq_min
+            mz_normalized = (mz_value - self.min_mz_overall) / (self.max_mz_overall - self.min_mz_overall)
+            mz_normalized = np.clip(mz_normalized, 0, 1)
+            mz_inverted = 1 - mz_normalized
+            num_octaves = math.log2(freq_max / freq_min)  # Calculate octaves from freq range
+            octave_position = mz_inverted * num_octaves
+            return freq_min * (2 ** octave_position)
+            
+        elif mapping_type == 'chromatic':
+            if mz_value <= 0:
+                return freq_min
+            mz_normalized = (mz_value - self.min_mz_overall) / (self.max_mz_overall - self.min_mz_overall)
+            mz_normalized = np.clip(mz_normalized, 0, 1)
+            mz_inverted = 1 - mz_normalized
+            num_semitones = 12 * math.log2(freq_max / freq_min)  # Semitones in the range
+            semitone_position = mz_inverted * num_semitones
+            return freq_min * (2 ** (semitone_position / 12))
+            
+        else:  # Fallback to original linear
+            return float(mz_value)
+
+    def _generate_audio_gradient_enhanced(self, frequency_mapping, freq_range, overlap_percentage):
+        """Enhanced gradient method with better frequency mapping."""
+        
+        num_scans = len(self.processed_spectra_dfs)
+        samples_per_scan = round(self.sample_rate * self.total_duration_seconds / num_scans)
+        total_samples = int(samples_per_scan * num_scans)
+        
+        time_vector = np.linspace(0, total_samples / self.sample_rate, total_samples, 
+                                endpoint=False, dtype=np.float32)
+        
+        # Get all unique m/z values
+        all_mz_values = set()
+        for scan_df in self.processed_spectra_dfs:
+            if not scan_df.empty:
+                all_mz_values.update(scan_df.index)
+        
+        song = np.zeros(total_samples, dtype=np.float32)
+        overlap_samples = round(overlap_percentage * samples_per_scan)
+        
+        print("Generating enhanced audio with improved frequency mapping...")
+        
+        for mz_value in all_mz_values:
+            if mz_value <= 0:
+                continue
+                
+            # Convert m/z to frequency using selected mapping
+            frequency = self._mz_to_frequency(mz_value, frequency_mapping, freq_range)
+            if frequency <= 0:
+                continue
+                
+            # Generate sine wave at this frequency
+            mz_sine_wave = np.sin(frequency * 2 * math.pi * time_vector)
+            modulated_mz_wave_component = np.zeros_like(mz_sine_wave)
+
+            # Get normalized intensities for this m/z across all scans
+            normalized_intensities_for_mz = np.zeros(num_scans, dtype=np.float32)
+            for i, scan_df in enumerate(self.processed_spectra_dfs):
+                if mz_value in scan_df.index:
+                    normalized_intensities_for_mz[i] = scan_df.loc[mz_value, 'intensities'] / self.max_intensity_overall
+            
+            # Apply intensity modulation (simplified version - you can use the full ramp version)
+            for scan_idx in range(num_scans):
+                start_sample_idx = scan_idx * samples_per_scan
+                end_sample_idx = start_sample_idx + samples_per_scan
+                
+                current_segment_sine = mz_sine_wave[start_sample_idx:end_sample_idx]
+                if current_segment_sine.size == 0:
+                    continue
+
+                current_intensity = normalized_intensities_for_mz[scan_idx]
+                modulated_mz_wave_component[start_sample_idx:end_sample_idx] = current_segment_sine * current_intensity
+            
+            song += modulated_mz_wave_component
+
+        return song

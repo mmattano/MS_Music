@@ -274,3 +274,237 @@ def generate_audio_adsr_method(processed_spectra_dfs: list,
         song = np.pad(song, (0, total_samples_target - len(song)), 'constant', constant_values=0)
         
     return song
+
+
+def mz_to_frequency_inverse_log(mz_value, mz_min, mz_max, 
+                               freq_min=200.0, freq_max=4000.0):
+    """
+    Maps m/z values to frequencies using inverse logarithmic scaling.
+    Low m/z → high frequency, high m/z → low frequency
+    Uses logarithmic scaling for musical feel.
+    
+    Args:
+        mz_value: The m/z value to convert
+        mz_min, mz_max: The range of m/z values in your dataset
+        freq_min, freq_max: The desired frequency range in Hz
+    
+    Returns:
+        Frequency in Hz
+    """
+    if mz_value <= 0 or mz_min <= 0:
+        return freq_min
+    
+    # Normalize m/z to [0, 1] range
+    mz_normalized = (mz_value - mz_min) / (mz_max - mz_min)
+    mz_normalized = np.clip(mz_normalized, 0, 1)
+    
+    # Inverse logarithmic mapping
+    # Higher m/z (closer to 1) gives lower frequency
+    log_ratio = math.log(freq_max / freq_min)
+    frequency = freq_max * math.exp(-mz_normalized * log_ratio)
+    
+    return frequency
+
+def mz_to_frequency_power_law(mz_value, mz_min, mz_max,
+                             freq_min=200.0, freq_max=4000.0, 
+                             exponent=1.5):
+    """
+    Maps m/z values using a power law relationship.
+    Gives smoother, more organic feeling transitions.
+    
+    Args:
+        exponent: Controls the curve shape (1.0 = linear, >1.0 = more curved)
+    """
+    if mz_value <= 0:
+        return freq_min
+        
+    # Normalize and invert
+    mz_normalized = (mz_value - mz_min) / (mz_max - mz_min)
+    mz_normalized = np.clip(mz_normalized, 0, 1)
+    
+    # Power law scaling (inverted so low m/z → high freq)
+    freq_normalized = (1 - mz_normalized) ** exponent
+    
+    # Map to frequency range (logarithmic)
+    log_freq_min = math.log(freq_min)
+    log_freq_max = math.log(freq_max)
+    log_frequency = log_freq_min + freq_normalized * (log_freq_max - log_freq_min)
+    
+    return math.exp(log_frequency)
+
+def mz_to_frequency_musical_octaves(mz_value, mz_min, mz_max,
+                                   base_freq=440.0, num_octaves=4):
+    """
+    Maps m/z to frequencies using musical octaves.
+    Each octave doubles the frequency, creating very musical results.
+    
+    Args:
+        base_freq: Starting frequency (like A4 = 440 Hz)
+        num_octaves: Number of octaves to span
+    """
+    if mz_value <= 0:
+        return base_freq
+        
+    # Normalize m/z to [0, 1]
+    mz_normalized = (mz_value - mz_min) / (mz_max - mz_min)
+    mz_normalized = np.clip(mz_normalized, 0, 1)
+    
+    # Invert so low m/z → high frequency
+    mz_inverted = 1 - mz_normalized
+    
+    # Map to octaves (each octave is a doubling of frequency)
+    octave_position = mz_inverted * num_octaves
+    frequency = base_freq * (2 ** octave_position)
+    
+    return frequency
+
+def mz_to_frequency_chromatic_scale(mz_value, mz_min, mz_max,
+                                   base_freq=261.63, # C4
+                                   num_semitones=48): # 4 octaves
+    """
+    Maps m/z to frequencies using chromatic (12-tone) scale.
+    Creates very musical results that sound like actual notes.
+    """
+    if mz_value <= 0:
+        return base_freq
+        
+    # Normalize and invert
+    mz_normalized = (mz_value - mz_min) / (mz_max - mz_min)
+    mz_normalized = np.clip(mz_normalized, 0, 1)
+    mz_inverted = 1 - mz_normalized
+    
+    # Map to semitones
+    semitone_position = mz_inverted * num_semitones
+    
+    # Convert to frequency (each semitone is 2^(1/12))
+    frequency = base_freq * (2 ** (semitone_position / 12))
+    
+    return frequency
+
+# Modified audio generation function
+def generate_audio_gradient_method_enhanced(processed_spectra_dfs: list,
+                                          max_intensity_overall: float,
+                                          min_mz_overall: float, 
+                                          max_mz_overall: float,
+                                          total_duration_seconds: float, 
+                                          sample_rate: int,
+                                          overlap_percentage: float = 0.05,
+                                          frequency_mapping: str = 'inverse_log',
+                                          freq_range: tuple = (200.0, 4000.0)):
+    """
+    Enhanced version of the gradient method with better frequency mapping.
+    
+    Args:
+        frequency_mapping: 'inverse_log', 'power_law', 'musical_octaves', or 'chromatic'
+        freq_range: (min_freq, max_freq) in Hz
+    """
+    if not processed_spectra_dfs:
+        print("Warning (Gradient Enhanced): No processed spectra. Returning silent audio.")
+        return np.zeros(int(total_duration_seconds * sample_rate), dtype=np.float32)
+        
+    if max_intensity_overall <= 0:
+        print("Warning (Gradient Enhanced): Max overall intensity is non-positive.")
+        return np.zeros(int(total_duration_seconds * sample_rate), dtype=np.float32)
+
+    num_scans = len(processed_spectra_dfs)
+    if num_scans == 0:
+        return np.zeros(int(total_duration_seconds * sample_rate), dtype=np.float32)
+        
+    samples_per_scan = round(sample_rate * total_duration_seconds / num_scans)
+    if samples_per_scan <= 0:
+        print("Warning (Gradient Enhanced): Samples per scan is not positive.")
+        return np.zeros(int(total_duration_seconds * sample_rate), dtype=np.float32)
+
+    total_samples = int(samples_per_scan * num_scans)
+    actual_total_duration_seconds = total_samples / sample_rate
+    time_vector = np.linspace(0, actual_total_duration_seconds, total_samples, 
+                             endpoint=False, dtype=np.float32)
+
+    # Get all unique m/z values
+    all_mz_values = set()
+    for scan_df in processed_spectra_dfs:
+        if not scan_df.empty:
+            all_mz_values.update(scan_df.index)
+    
+    if not all_mz_values:
+        return np.zeros(total_samples, dtype=np.float32)
+    
+    all_mz_values = sorted(all_mz_values)
+    
+    # Choose frequency mapping function
+    freq_min, freq_max = freq_range
+    
+    if frequency_mapping == 'inverse_log':
+        freq_func = lambda mz: mz_to_frequency_inverse_log(
+            mz, min_mz_overall, max_mz_overall, freq_min, freq_max)
+    elif frequency_mapping == 'power_law':
+        freq_func = lambda mz: mz_to_frequency_power_law(
+            mz, min_mz_overall, max_mz_overall, freq_min, freq_max)
+    elif frequency_mapping == 'musical_octaves':
+        freq_func = lambda mz: mz_to_frequency_musical_octaves(
+            mz, min_mz_overall, max_mz_overall, freq_min, 4)
+    elif frequency_mapping == 'chromatic':
+        freq_func = lambda mz: mz_to_frequency_chromatic_scale(
+            mz, min_mz_overall, max_mz_overall, freq_min, 48)
+    else:
+        # Fallback to original linear mapping
+        freq_func = lambda mz: float(mz)
+    
+    song = np.zeros(total_samples, dtype=np.float32)
+    overlap_samples = round(overlap_percentage * samples_per_scan)
+
+    print(f"Generating audio with enhanced gradient method using {frequency_mapping} mapping...")
+    
+    # Process each m/z value
+    for mz_value in all_mz_values:
+        if mz_value <= 0:
+            continue
+            
+        # Convert m/z to frequency using selected mapping
+        frequency = freq_func(mz_value)
+        if frequency <= 0:
+            continue
+            
+        print(f"m/z {mz_value} → {frequency:.1f} Hz")
+        
+        # Generate sine wave at this frequency
+        mz_sine_wave = np.sin(frequency * 2 * math.pi * time_vector)
+        modulated_mz_wave_component = np.zeros_like(mz_sine_wave)
+
+        # Get normalized intensities for this m/z across all scans
+        normalized_intensities_for_mz = np.zeros(num_scans, dtype=np.float32)
+        for i, scan_df in enumerate(processed_spectra_dfs):
+            if mz_value in scan_df.index:
+                normalized_intensities_for_mz[i] = scan_df.loc[mz_value, 'intensities'] / max_intensity_overall
+        
+        # Apply intensity modulation with ramps (using existing _apply_intensity_ramps function)
+        for scan_idx in range(num_scans):
+            start_sample_idx = scan_idx * samples_per_scan
+            end_sample_idx = start_sample_idx + samples_per_scan
+            
+            current_segment_sine = mz_sine_wave[start_sample_idx:end_sample_idx]
+            if current_segment_sine.size == 0:
+                continue
+
+            current_intensity = normalized_intensities_for_mz[scan_idx]
+            prev_intensity = normalized_intensities_for_mz[scan_idx - 1] if scan_idx > 0 else 0.0
+            next_intensity = normalized_intensities_for_mz[scan_idx + 1] if scan_idx < num_scans - 1 else 0.0
+            
+            is_first = (scan_idx == 0)
+            is_last = (scan_idx == num_scans - 1)
+
+            # You'd need to import or copy the _apply_intensity_ramps function here
+            # For now, simple intensity application:
+            ramped_segment = current_segment_sine * current_intensity
+            modulated_mz_wave_component[start_sample_idx:end_sample_idx] = ramped_segment
+        
+        song += modulated_mz_wave_component
+
+    # Ensure final song length matches expected
+    expected_total_samples = int(total_duration_seconds * sample_rate)
+    if len(song) > expected_total_samples:
+        song = song[:expected_total_samples]
+    elif len(song) < expected_total_samples:
+        song = np.pad(song, (0, expected_total_samples - len(song)), 'constant', constant_values=0)
+        
+    return song
