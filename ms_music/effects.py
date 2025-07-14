@@ -312,8 +312,6 @@ def apply_experimental_phase_vocoder_modulation(audio_data: np.ndarray, sample_r
 
     processed_song = song_float
     
-    # Apply pitch shift first, then time stretch, or vice-versa. Order can matter.
-    # Librosa's effects are generally robust.
     if pitch_shift_semitones != 0.0:
         try:
             processed_song = librosa.effects.pitch_shift(y=processed_song, sr=sample_rate,

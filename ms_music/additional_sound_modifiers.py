@@ -3,7 +3,7 @@
 import numpy as np
 import librosa
 from scipy import signal
-import os # For test output directory
+import os
 
 TAU = 2 * np.pi
 
@@ -197,8 +197,8 @@ def apply_chorus(audio_data: np.ndarray, sample_rate: int,
             modulated_delay_samps = delay_samples_base + lfo[i]
             modulated_delay_samps = np.clip(modulated_delay_samps, 0, current_delay_line.shape[0] - 1.01) # ensure idx_ceil is in bounds
 
-            read_idx_exact = i - modulated_delay_samps # Where to read from the *original* signal
-            
+            read_idx_exact = i - modulated_delay_samps # Where to read from the original signal
+
             delayed_sample_val = 0.0
             if read_idx_exact >= 0:
                 idx_floor = int(np.floor(read_idx_exact))
