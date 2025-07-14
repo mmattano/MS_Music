@@ -9,6 +9,8 @@ from . import data_loader
 from . import audio_generator
 from . import effects as audio_effects
 from . import utils
+from . import musical_quantization
+from .musical_quantization import MusicalNoteQuantizer
 
 class MSSonifier:
     """
@@ -28,6 +30,7 @@ class MSSonifier:
         self.max_mz_overall = 0
         
         self.current_audio_data = None
+        self.note_quantizer = None
 
         print(f"MSSonifier initialized for file: {os.path.basename(filepath)}")
         print(f"Target audio duration: {total_duration_minutes} minutes, Sample rate: {sample_rate} Hz")
@@ -146,9 +149,7 @@ class MSSonifier:
             print(f"Error: Effect function '{effect_function_name}' not found in effects module.")
         except Exception as e:
             print(f"Error applying effect '{effect_name}': {e}")
-            # Optionally, re-raise or handle more gracefully depending on desired package behavior
-            # For now, print error and sonifier.current_audio_data might remain the pre-effect audio.
-
+            self.current_audio_data = None
 
     def save_audio(self, output_filepath: str, normalize: bool = True):
         if self.current_audio_data is None or self.current_audio_data.size == 0:
@@ -184,7 +185,7 @@ class MSSonifier:
         if self.current_audio_data is None:
             return None
         return np.copy(self.current_audio_data) if copy else self.current_audio_data
-            
+    
 
     def sonify_enhanced(self, method: str = 'gradient_enhanced', method_params: dict = None):
         """
@@ -336,3 +337,233 @@ class MSSonifier:
             song += modulated_mz_wave_component
 
         return song
+    
+    def setup_musical_quantization(self, 
+                                  scale='chromatic', 
+                                  root_note='C', 
+                                  tuning_freq=440.0,
+                                  freq_range=None):
+        """
+        Set up musical note quantization for sonification.
+        
+        Args:
+            scale: Musical scale ('chromatic', 'major', 'minor', 'pentatonic_major', 
+                   'pentatonic_minor', 'blues', 'dorian', 'mixolydian', 'whole_tone')
+            root_note: Root note of the scale ('C', 'D', 'E', 'F', 'G', 'A', 'B')
+            tuning_freq: Frequency of A4 in Hz (standard is 440.0)
+            freq_range: (min_freq, max_freq) or None to use default (200, 4000)
+        """
+        if freq_range is None:
+            freq_range = (200, 4000)
+            
+        self.note_quantizer = MusicalNoteQuantizer(
+            scale=scale,
+            root_note=root_note,
+            tuning_freq=tuning_freq,
+            freq_range=freq_range
+        )
+        
+        print(f"Musical quantization set up: {scale} scale in {root_note}")
+        return self.note_quantizer
+    
+    def setup_musical_quantization(self, 
+                                scale='chromatic', 
+                                root_note='C', 
+                                tuning_freq=440.0,
+                                freq_range=None):
+        """
+        Set up musical note quantization for sonification.
+        
+        Args:
+            scale: Musical scale ('chromatic', 'major', 'minor', 'pentatonic_major', 
+                'pentatonic_minor', 'blues', 'dorian', 'mixolydian', 'whole_tone')
+            root_note: Root note of the scale ('C', 'D', 'E', 'F', 'G', 'A', 'B')
+            tuning_freq: Frequency of A4 in Hz (standard is 440.0)
+            freq_range: (min_freq, max_freq) or None to use default (200, 4000)
+        """
+        if freq_range is None:
+            freq_range = (200, 4000)
+            
+        self.note_quantizer = MusicalNoteQuantizer(
+            scale=scale,
+            root_note=root_note,
+            tuning_freq=tuning_freq,
+            freq_range=freq_range
+        )
+        
+        print(f"Musical quantization set up: {scale} scale in {root_note}")
+        return self.note_quantizer
+    
+    def sonify_quantized(self, 
+                        base_mapping='inverse_log',
+                        method_params=None):
+        """
+        Sonify using quantized musical notes.
+        
+        Args:
+            base_mapping: Base frequency mapping before quantization
+                        ('inverse_log', 'power_law', 'musical_octaves', 'chromatic')
+            method_params: Dictionary with parameters:
+                - freq_range: (min_freq, max_freq) for base mapping
+                - overlap_percentage: for intensity transitions
+                - use_log_distance: Use logarithmic distance for note selection
+                - scale: Musical scale to use
+                - root_note: Root note of the scale
+                - tuning_freq: A4 frequency
+        """
+        if self.processed_spectra_dfs is None or not self.processed_spectra_dfs:
+            print("Data not loaded or preprocessed. Please call load_and_preprocess_data() first.")
+            return
+
+        if method_params is None:
+            method_params = {}
+        
+        # Set up quantizer if not already done or if parameters changed
+        scale = method_params.get('scale', 'major')
+        root_note = method_params.get('root_note', 'C')
+        tuning_freq = method_params.get('tuning_freq', 440.0)
+        freq_range = method_params.get('freq_range', (200, 3000))
+        
+        if (self.note_quantizer is None or 
+            self.note_quantizer.scale != scale or 
+            self.note_quantizer.root_note != root_note or
+            self.note_quantizer.tuning_freq != tuning_freq):
+            
+            self.setup_musical_quantization(scale, root_note, tuning_freq, freq_range)
+        
+        overlap_percentage = method_params.get('overlap_percentage', 0.05)
+        use_log_distance = method_params.get('use_log_distance', True)
+        
+        print(f"Starting quantized sonification with {base_mapping} base mapping...")
+        print(f"Scale: {scale} in {root_note}, Tuning: A4 = {tuning_freq} Hz")
+        
+        self.current_audio_data = self._generate_quantized_audio(
+            base_mapping=base_mapping,
+            freq_range=freq_range,
+            overlap_percentage=overlap_percentage,
+            use_log_distance=use_log_distance
+        )
+        
+        if self.current_audio_data is not None and self.current_audio_data.size > 0:
+            print("Quantized sonification complete.")
+        else:
+            print("Quantized sonification failed to produce audio data.")
+            self.current_audio_data = None
+    
+    def _generate_quantized_audio(self, base_mapping, freq_range, overlap_percentage, use_log_distance):
+        """Generate audio with quantized frequencies."""
+        from tqdm import tqdm
+        
+        num_scans = len(self.processed_spectra_dfs)
+        samples_per_scan = round(self.sample_rate * self.total_duration_seconds / num_scans)
+        total_samples = int(samples_per_scan * num_scans)
+        
+        time_vector = np.linspace(0, total_samples / self.sample_rate, total_samples, 
+                                endpoint=False, dtype=np.float32)
+        
+        # Get all unique m/z values
+        all_mz_values = set()
+        for scan_df in self.processed_spectra_dfs:
+            if not scan_df.empty:
+                all_mz_values.update(scan_df.index)
+        
+        if not all_mz_values:
+            return np.zeros(total_samples, dtype=np.float32)
+        
+        song = np.zeros(total_samples, dtype=np.float32)
+        overlap_samples = round(overlap_percentage * samples_per_scan)
+        
+        # Create mapping from m/z to quantized frequencies
+        mz_to_freq_map = {}
+        unique_frequencies = set()
+        
+        print("Mapping m/z values to quantized frequencies...")
+        for mz_value in tqdm(sorted(all_mz_values), desc="Quantizing frequencies"):
+            if mz_value <= 0:
+                continue
+                
+            # Get continuous frequency using base mapping
+            if base_mapping == 'inverse_log':
+                continuous_freq = self._mz_to_frequency_inverse_log(mz_value, freq_range)
+            elif base_mapping == 'power_law':
+                continuous_freq = self._mz_to_frequency_power_law(mz_value, freq_range)
+            elif base_mapping == 'musical_octaves':
+                continuous_freq = self._mz_to_frequency_musical_octaves(mz_value, freq_range)
+            elif base_mapping == 'chromatic':
+                continuous_freq = self._mz_to_frequency_chromatic(mz_value, freq_range)
+            else:
+                continuous_freq = float(mz_value)
+            
+            # Quantize to nearest musical note
+            if use_log_distance:
+                note_info = self.note_quantizer.quantize_frequency_log(continuous_freq)
+            else:
+                note_info = self.note_quantizer.quantize_frequency(continuous_freq)
+            
+            quantized_freq = note_info['frequency']
+            mz_to_freq_map[mz_value] = quantized_freq
+            unique_frequencies.add(quantized_freq)
+        
+        print(f"Mapped {len(all_mz_values)} m/z values to {len(unique_frequencies)} unique frequencies")
+        
+        # Group m/z values by their quantized frequency for more efficient processing
+        freq_to_mz_groups = {}
+        for mz_value, freq in mz_to_freq_map.items():
+            if freq not in freq_to_mz_groups:
+                freq_to_mz_groups[freq] = []
+            freq_to_mz_groups[freq].append(mz_value)
+        
+        print("Generating audio with quantized frequencies...")
+        for frequency, mz_group in tqdm(freq_to_mz_groups.items(), desc="Processing frequencies"):
+            if frequency <= 0:
+                continue
+            
+            # Generate sine wave at this quantized frequency
+            mz_sine_wave = np.sin(frequency * 2 * math.pi * time_vector)
+            modulated_mz_wave_component = np.zeros_like(mz_sine_wave)
+            
+            # Combine intensities from all m/z values that map to this frequency
+            combined_intensities = np.zeros(num_scans, dtype=np.float32)
+            for mz_value in mz_group:
+                for i, scan_df in enumerate(self.processed_spectra_dfs):
+                    if mz_value in scan_df.index:
+                        combined_intensities[i] += scan_df.loc[mz_value, 'intensities'] / self.max_intensity_overall
+            
+            # Apply intensity modulation with simple transitions
+            for scan_idx in range(num_scans):
+                start_sample_idx = scan_idx * samples_per_scan
+                end_sample_idx = start_sample_idx + samples_per_scan
+                
+                current_segment_sine = mz_sine_wave[start_sample_idx:end_sample_idx]
+                if current_segment_sine.size == 0:
+                    continue
+
+                current_intensity = combined_intensities[scan_idx]
+                
+                # Simple intensity modulation
+                modulated_mz_wave_component[start_sample_idx:end_sample_idx] = current_segment_sine * current_intensity
+            
+            song += modulated_mz_wave_component
+        
+        return song
+    
+    def _mz_to_frequency_inverse_log(self, mz_value, freq_range):
+        """Helper method for inverse log mapping."""
+        from .musical_quantization import mz_to_frequency_inverse_log
+        return mz_to_frequency_inverse_log(mz_value, self.min_mz_overall, self.max_mz_overall, *freq_range)
+    
+    def _mz_to_frequency_power_law(self, mz_value, freq_range, exponent=1.5):
+        """Helper method for power law mapping."""
+        from .musical_quantization import mz_to_frequency_power_law
+        return mz_to_frequency_power_law(mz_value, self.min_mz_overall, self.max_mz_overall, *freq_range, exponent)
+    
+    def _mz_to_frequency_musical_octaves(self, mz_value, freq_range):
+        """Helper method for musical octaves mapping."""
+        from .musical_quantization import mz_to_frequency_musical_octaves
+        return mz_to_frequency_musical_octaves(mz_value, self.min_mz_overall, self.max_mz_overall, freq_range[0], 4)
+    
+    def _mz_to_frequency_chromatic(self, mz_value, freq_range):
+        """Helper method for chromatic mapping."""
+        from .musical_quantization import mz_to_frequency_chromatic_scale
+        return mz_to_frequency_chromatic_scale(mz_value, self.min_mz_overall, self.max_mz_overall, freq_range[0], 48)
+    
